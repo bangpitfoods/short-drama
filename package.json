@@ -1,0 +1,16 @@
+{
+  "name": "short-drama-hub",
+  "version": "1.0.0",
+  "description": "Stremio addon for short-drama providers via DramaBos API",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "stremio-addon-sdk": "^1.6.10"
+  }
+}
