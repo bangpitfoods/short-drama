@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: short-drama-hub
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DRAMABOS_BASE
+        value: https://dramabos.live
