@@ -6,10 +6,13 @@ const { addonBuilder, getRouter } = sdk;
 const app = express();
 
 const PORT = process.env.PORT || 7000;
+
 const API_BASE = (
   process.env.DRAMABOS_BASE || "https://dramabos.live"
 ).replace(/\/$/, "");
 
+// API key OPTIONAL.
+// Jangan masukkan apa-apa kalau guna free/no-auth endpoint.
 const API_KEY = process.env.DRAMABOS_API_KEY || "";
 
 // ============================================================
@@ -33,13 +36,13 @@ const PROVIDERS = [
 const providerNames = Object.fromEntries(PROVIDERS);
 
 // ============================================================
-// STREMIO MANIFEST
+// MANIFEST
 // ============================================================
 
 const manifest = {
   id: "com.bangpitfoods.shortdrama",
 
-  version: "1.1.0",
+  version: "1.1.1",
 
   name: "Short Drama Hub",
 
@@ -79,36 +82,73 @@ const manifest = {
   }
 };
 
-// ============================================================
-// STREMIO ADDON
-// ============================================================
-
 const builder = new addonBuilder(manifest);
 
 // ============================================================
 // HELPERS
 // ============================================================
 
-function listFrom(payload, keys = [
-  "data",
-  "results",
-  "dramas",
-  "episodes"
-]) {
+function listFrom(
+  payload,
+  keys = [
+    "data",
+    "results",
+    "dramas",
+    "episodes",
+    "items",
+    "list"
+  ]
+) {
+  // Response terus array
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  // Contoh:
+  // { data: [...] }
+  // { results: [...] }
+  // { dramas: [...] }
+  // { episodes: [...] }
   for (const key of keys) {
-    if (payload && Array.isArray(payload[key])) {
+    if (
+      payload &&
+      Array.isArray(payload[key])
+    ) {
       return payload[key];
     }
   }
 
-  if (Array.isArray(payload)) {
-    return payload;
+  // Contoh:
+  // { data: { results: [...] } }
+  // { data: { items: [...] } }
+  if (
+    payload?.data &&
+    typeof payload.data === "object" &&
+    !Array.isArray(payload.data)
+  ) {
+    for (const key of keys) {
+      if (
+        Array.isArray(
+          payload.data[key]
+        )
+      ) {
+        return payload.data[key];
+      }
+    }
   }
 
   return [];
 }
 
-function val(object, keys, fallback = "") {
+// ============================================================
+// VALUE HELPER
+// ============================================================
+
+function val(
+  object,
+  keys,
+  fallback = ""
+) {
   for (const key of keys) {
     if (
       object?.[key] !== undefined &&
@@ -121,6 +161,10 @@ function val(object, keys, fallback = "") {
 
   return fallback;
 }
+
+// ============================================================
+// GENRE
+// ============================================================
 
 function arrGenre(value) {
   if (Array.isArray(value)) {
@@ -144,7 +188,7 @@ function arrGenre(value) {
 function apiHeaders() {
   return {
     accept: "application/json",
-    "user-agent": "ShortDramaHub/1.1",
+    "user-agent": "ShortDramaHub/1.1.1",
 
     ...(API_KEY
       ? {
@@ -162,18 +206,42 @@ function apiHeaders() {
 async function api(path) {
   const url = API_BASE + path;
 
-  console.log("API:", url);
+  console.log(
+    "===================================="
+  );
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: apiHeaders()
-  });
+  console.log(
+    "DRAMABOS REQUEST:",
+    url
+  );
 
-  const body = await response.text();
+  const response = await fetch(
+    url,
+    {
+      method: "GET",
+      headers: apiHeaders()
+    }
+  );
+
+  const body =
+    await response.text();
+
+  console.log(
+    "DRAMABOS STATUS:",
+    response.status
+  );
+
+  console.log(
+    "DRAMABOS RESPONSE:",
+    body.slice(0, 1000)
+  );
 
   if (!response.ok) {
     throw new Error(
-      `DramaBos ${response.status}: ${body.slice(0, 300)}`
+      `DramaBos ${response.status}: ${body.slice(
+        0,
+        500
+      )}`
     );
   }
 
@@ -190,77 +258,126 @@ async function api(path) {
 // NORMALIZE DRAMA
 // ============================================================
 
-function normalizeDrama(drama, provider) {
+function normalizeDrama(
+  drama,
+  provider
+) {
   const dramaId = String(
-    val(drama, [
-      "id",
-      "bookId",
-      "dramaId",
-      "code"
-    ])
+    val(
+      drama,
+      [
+        "id",
+        "bookId",
+        "dramaId",
+        "code",
+        "book_id",
+        "drama_id"
+      ]
+    )
   );
 
   const title = String(
-    val(drama, [
-      "title",
-      "name"
-    ], "Untitled")
+    val(
+      drama,
+      [
+        "title",
+        "name",
+        "bookName",
+        "dramaName"
+      ],
+      "Untitled"
+    )
   );
 
-  const poster = val(drama, [
-    "cover",
-    "poster",
-    "coverUrl",
-    "image"
-  ]);
+  const poster = val(
+    drama,
+    [
+      "cover",
+      "poster",
+      "coverUrl",
+      "cover_url",
+      "image",
+      "thumbnail"
+    ]
+  );
 
-  const background = val(drama, [
-    "background",
-    "backdrop",
-    "cover"
-  ]);
+  const background = val(
+    drama,
+    [
+      "background",
+      "backdrop",
+      "backgroundUrl",
+      "cover"
+    ]
+  );
 
-  const description = val(drama, [
-    "synopsis",
-    "description",
-    "desc"
-  ]);
+  const description = val(
+    drama,
+    [
+      "synopsis",
+      "description",
+      "desc",
+      "summary"
+    ]
+  );
 
   const genres = arrGenre(
-    val(drama, [
-      "genre",
-      "genres"
-    ], [])
+    val(
+      drama,
+      [
+        "genre",
+        "genres",
+        "category",
+        "categories"
+      ],
+      []
+    )
   );
 
-  const year = val(drama, [
-    "year",
-    "releaseYear"
-  ]);
+  const year = val(
+    drama,
+    [
+      "year",
+      "releaseYear",
+      "release_year"
+    ]
+  );
 
   const rating = Number(
-    val(drama, [
-      "rating",
-      "score"
-    ], 0)
+    val(
+      drama,
+      [
+        "rating",
+        "score",
+        "imdbRating"
+      ],
+      0
+    )
   );
 
   return {
-    id: `sdh:${provider}:${encodeURIComponent(dramaId)}`,
+    id:
+      `sdh:${provider}:${encodeURIComponent(
+        dramaId
+      )}`,
 
     type: "series",
 
     name: title,
 
-    poster: poster || undefined,
+    poster:
+      poster || undefined,
 
-    background: background || undefined,
+    background:
+      background || undefined,
 
-    description: description || undefined,
+    description:
+      description || undefined,
 
     genres,
 
-    releaseInfo: String(year || ""),
+    releaseInfo:
+      String(year || ""),
 
     ...(rating
       ? {
@@ -271,11 +388,15 @@ function normalizeDrama(drama, provider) {
 }
 
 // ============================================================
-// CATALOG
+// CATALOG HANDLER
 // ============================================================
 
 builder.defineCatalogHandler(
-  async ({ type, id, extra }) => {
+  async ({
+    type,
+    id,
+    extra
+  }) => {
 
     if (
       type !== "series" ||
@@ -286,9 +407,12 @@ builder.defineCatalogHandler(
       };
     }
 
-    const provider = id.slice(4);
+    const provider =
+      id.slice(4);
 
-    if (!providerNames[provider]) {
+    if (
+      !providerNames[provider]
+    ) {
       return {
         metas: []
       };
@@ -298,49 +422,84 @@ builder.defineCatalogHandler(
 
       let path;
 
+      // ======================================================
       // SEARCH
-      if (extra?.search) {
+      // ======================================================
 
-        const query = encodeURIComponent(
-          extra.search
-        );
+      if (
+        extra?.search
+      ) {
+
+        const query =
+          encodeURIComponent(
+            extra.search
+          );
 
         if (
           provider === "shortmax" ||
           provider === "flickreels"
         ) {
+
           path =
             `/${provider}/api/v1/search?q=${query}`;
+
         } else {
+
           path =
             `/${provider}/api/v1/search?keyword=${query}`;
+
         }
 
       }
 
+      // ======================================================
       // HOME
+      // ======================================================
+
       else {
 
         path =
           `/${provider}/api/v1/home`;
+
       }
 
-      const data = await api(path);
+      const data =
+        await api(path);
 
-      const dramas = listFrom(data);
+      const dramas =
+        listFrom(data);
 
-      const metas = dramas
-        .map((drama) =>
-          normalizeDrama(
-            drama,
-            provider
+      console.log(
+        "PROVIDER:",
+        provider
+      );
+
+      console.log(
+        "DRAMA COUNT:",
+        dramas.length
+      );
+
+      const metas =
+        dramas
+          .map(
+            (drama) =>
+              normalizeDrama(
+                drama,
+                provider
+              )
           )
-        )
-        .filter(
-          (item) =>
-            item.id &&
-            item.name
-        );
+          .filter(
+            (item) =>
+              item.id &&
+              item.name &&
+              item.name !==
+                "Untitled"
+          );
+
+      console.log(
+        "STREMIO METAS:",
+        metas.length
+      );
 
       return {
         metas
@@ -349,9 +508,20 @@ builder.defineCatalogHandler(
     } catch (error) {
 
       console.error(
+        "===================================="
+      );
+
+      console.error(
         "CATALOG ERROR:",
-        provider,
+        provider
+      );
+
+      console.error(
         error.message
+      );
+
+      console.error(
+        "===================================="
       );
 
       return {
@@ -362,11 +532,14 @@ builder.defineCatalogHandler(
 );
 
 // ============================================================
-// META
+// META HANDLER
 // ============================================================
 
 builder.defineMetaHandler(
-  async ({ type, id }) => {
+  async ({
+    type,
+    id
+  }) => {
 
     if (
       type !== "series" ||
@@ -377,11 +550,14 @@ builder.defineMetaHandler(
       };
     }
 
-    const parts = id.split(":");
+    const parts =
+      id.split(":");
 
-    const provider = parts[1];
+    const provider =
+      parts[1];
 
-    const encodedId = parts[2];
+    const encodedId =
+      parts[2];
 
     if (
       !providerNames[provider] ||
@@ -393,17 +569,22 @@ builder.defineMetaHandler(
     }
 
     const dramaId =
-      decodeURIComponent(encodedId);
+      decodeURIComponent(
+        encodedId
+      );
 
     try {
 
-      // --------------------------------------------------------
+      // ======================================================
       // DETAIL
-      // --------------------------------------------------------
+      // ======================================================
 
-      const detail = await api(
-        `/${provider}/api/v1/detail/${encodeURIComponent(dramaId)}`
-      );
+      const detail =
+        await api(
+          `/${provider}/api/v1/detail/${encodeURIComponent(
+            dramaId
+          )}`
+        );
 
       const drama =
         detail?.drama ||
@@ -419,26 +600,35 @@ builder.defineMetaHandler(
           provider
         );
 
-      // Keep original Stremio ID
+      // Kekalkan Stremio ID
       meta.id = id;
 
-      // --------------------------------------------------------
+      // ======================================================
       // EPISODES
-      // --------------------------------------------------------
+      // ======================================================
 
       let episodes;
 
-      if (provider === "flickreels") {
+      if (
+        provider ===
+        "flickreels"
+      ) {
 
-        episodes = await api(
-          `/flickreels/api/flickreels/allepisode?id=${encodeURIComponent(dramaId)}`
-        );
+        episodes =
+          await api(
+            `/flickreels/api/flickreels/allepisode?id=${encodeURIComponent(
+              dramaId
+            )}`
+          );
 
       } else {
 
-        episodes = await api(
-          `/${provider}/api/v1/episodes/${encodeURIComponent(dramaId)}`
-        );
+        episodes =
+          await api(
+            `/${provider}/api/v1/episodes/${encodeURIComponent(
+              dramaId
+            )}`
+          );
       }
 
       const episodeList =
@@ -447,13 +637,23 @@ builder.defineMetaHandler(
           [
             "data",
             "results",
-            "episodes"
+            "episodes",
+            "items",
+            "list"
           ]
         );
 
+      console.log(
+        "EPISODE COUNT:",
+        episodeList.length
+      );
+
       meta.videos =
         episodeList.map(
-          (episode, index) => {
+          (
+            episode,
+            index
+          ) => {
 
             const episodeNumber =
               Number(
@@ -463,7 +663,8 @@ builder.defineMetaHandler(
                     "number",
                     "episode",
                     "ep",
-                    "index"
+                    "index",
+                    "episodeNumber"
                   ],
                   index + 1
                 )
@@ -476,19 +677,24 @@ builder.defineMetaHandler(
                   [
                     "code",
                     "episodeCode",
-                    "epCode"
+                    "epCode",
+                    "episode_id"
                   ],
                   ""
                 )
               );
 
             let episodeToken =
-              String(episodeNumber);
+              String(
+                episodeNumber
+              );
 
             if (
-              provider === "shortmax" &&
+              provider ===
+                "shortmax" &&
               episodeCode
             ) {
+
               episodeToken =
                 encodeURIComponent(
                   episodeCode
@@ -525,7 +731,8 @@ builder.defineMetaHandler(
                     "cover",
                     "image"
                   ]
-                ) || undefined,
+                ) ||
+                undefined,
 
               overview:
                 val(
@@ -560,11 +767,14 @@ builder.defineMetaHandler(
 );
 
 // ============================================================
-// STREAM
+// STREAM HANDLER
 // ============================================================
 
 builder.defineStreamHandler(
-  async ({ type, id }) => {
+  async ({
+    type,
+    id
+  }) => {
 
     if (
       type !== "series" ||
@@ -578,7 +788,9 @@ builder.defineStreamHandler(
     const parts =
       id.split(":");
 
-    if (parts.length < 4) {
+    if (
+      parts.length < 4
+    ) {
       return {
         streams: []
       };
@@ -588,14 +800,20 @@ builder.defineStreamHandler(
       parts[1];
 
     const dramaId =
-      decodeURIComponent(parts[2]);
+      decodeURIComponent(
+        parts[2]
+      );
 
     const episodeToken =
       decodeURIComponent(
-        parts.slice(3).join(":")
+        parts
+          .slice(3)
+          .join(":")
       );
 
-    if (!providerNames[provider]) {
+    if (
+      !providerNames[provider]
+    ) {
       return {
         streams: []
       };
@@ -605,8 +823,14 @@ builder.defineStreamHandler(
 
       let path;
 
+      // ======================================================
       // SHORTMAX
-      if (provider === "shortmax") {
+      // ======================================================
+
+      if (
+        provider ===
+        "shortmax"
+      ) {
 
         path =
           `/shortmax/api/v1/play/${encodeURIComponent(
@@ -615,7 +839,10 @@ builder.defineStreamHandler(
 
       }
 
+      // ======================================================
       // OTHER PROVIDERS
+      // ======================================================
+
       else {
 
         path =
@@ -634,13 +861,18 @@ builder.defineStreamHandler(
           data,
           [
             "streamUrl",
+            "stream_url",
             "url",
             "playUrl",
-            "videoUrl"
+            "play_url",
+            "videoUrl",
+            "video_url"
           ]
         );
 
-      if (!streamUrl) {
+      if (
+        !streamUrl
+      ) {
 
         console.error(
           "No stream URL returned"
@@ -650,6 +882,10 @@ builder.defineStreamHandler(
           streams: []
         };
       }
+
+      // ======================================================
+      // SUBTITLES
+      // ======================================================
 
       let subtitles;
 
@@ -663,9 +899,12 @@ builder.defineStreamHandler(
           data.subtitles
             .map(
               (subtitle) => ({
-                url: subtitle.url,
+                url:
+                  subtitle.url,
+
                 lang:
                   subtitle.lang ||
+                  subtitle.language ||
                   "en"
               })
             )
@@ -682,7 +921,9 @@ builder.defineStreamHandler(
           {
 
             name:
-              providerNames[provider],
+              providerNames[
+                provider
+              ],
 
             title:
               `Episode ${episodeToken}`,
@@ -722,7 +963,7 @@ builder.defineStreamHandler(
 );
 
 // ============================================================
-// HEALTH CHECK
+// HEALTH
 // ============================================================
 
 app.get(
@@ -730,6 +971,7 @@ app.get(
   (_req, res) => {
 
     res.json({
+
       ok: true,
 
       addon:
@@ -742,7 +984,11 @@ app.get(
         PROVIDERS.length,
 
       api:
-        API_BASE
+        API_BASE,
+
+      apiKeyConfigured:
+        Boolean(API_KEY)
+
     });
   }
 );
@@ -783,7 +1029,7 @@ app.use(
 );
 
 // ============================================================
-// START SERVER
+// START
 // ============================================================
 
 app.listen(
@@ -797,6 +1043,12 @@ app.listen(
 
     console.log(
       `DramaBos API: ${API_BASE}`
+    );
+
+    console.log(
+      `API key configured: ${Boolean(
+        API_KEY
+      )}`
     );
   }
 );
