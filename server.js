@@ -1,9 +1,20 @@
 import express from "express";
-import { addonBuilder, getRouter } from "stremio-addon-sdk";
+import sdk from "stremio-addon-sdk";
+
+const { addonBuilder, getRouter } = sdk;
 
 const app = express();
+
 const PORT = process.env.PORT || 7000;
-const API_BASE = (process.env.DRAMABOS_BASE || "https://dramabos.live").replace(/\/$/, "");
+const API_BASE = (
+  process.env.DRAMABOS_BASE || "https://dramabos.live"
+).replace(/\/$/, "");
+
+const API_KEY = process.env.DRAMABOS_API_KEY || "";
+
+// ============================================================
+// PROVIDERS
+// ============================================================
 
 const PROVIDERS = [
   ["dramabox", "DramaBox"],
@@ -15,173 +26,777 @@ const PROVIDERS = [
   ["flickreels", "FlickReels"],
   ["dramawave", "DramaWave"],
   ["freereels", "FreeReels"],
-  ["idrama", "iDrama"]
+  ["idrama", "iDrama"],
+  ["starshort", "StarShort"]
 ];
 
-const providerMap = Object.fromEntries(PROVIDERS);
+const providerNames = Object.fromEntries(PROVIDERS);
+
+// ============================================================
+// STREMIO MANIFEST
+// ============================================================
 
 const manifest = {
-  id: "com.shortsdrama.hub",
-  version: "1.0.0",
+  id: "com.bangpitfoods.shortdrama",
+
+  version: "1.1.0",
+
   name: "Short Drama Hub",
-  description: "DramaBox, ReelShort, ShortMax, GoodShort and other short-drama catalogs.",
-  logo: "https://www.stremio.com/website/stremio-logo.png",
-  resources: ["catalog", "meta", "stream"],
-  types: ["series"],
-  catalogs: PROVIDERS.map(([id, name]) => ({
+
+  description:
+    "Short-drama catalogs from DramaBox, ReelShort, ShortMax, GoodShort, NetShort and more.",
+
+  resources: [
+    "catalog",
+    "meta",
+    "stream"
+  ],
+
+  types: [
+    "series"
+  ],
+
+  idPrefixes: [
+    "sdh:"
+  ],
+
+  catalogs: PROVIDERS.map(([slug, name]) => ({
     type: "series",
-    id: `shortdrama-${id}`,
+    id: `sdh-${slug}`,
     name,
-    extra: [{ name: "search", isRequired: false }]
+
+    extra: [
+      {
+        name: "search",
+        isRequired: false
+      }
+    ]
   })),
+
   behaviorHints: {
     configurable: false,
     adult: false
   }
 };
 
+// ============================================================
+// STREMIO ADDON
+// ============================================================
+
 const builder = new addonBuilder(manifest);
 
-function arr(x) {
-  if (Array.isArray(x)) return x;
-  if (x && Array.isArray(x.data)) return x.data;
-  if (x && Array.isArray(x.results)) return x.results;
-  if (x && Array.isArray(x.dramas)) return x.dramas;
-  if (x && Array.isArray(x.episodes)) return x.episodes;
+// ============================================================
+// HELPERS
+// ============================================================
+
+function listFrom(payload, keys = [
+  "data",
+  "results",
+  "dramas",
+  "episodes"
+]) {
+  for (const key of keys) {
+    if (payload && Array.isArray(payload[key])) {
+      return payload[key];
+    }
+  }
+
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
   return [];
 }
 
-function pick(o, keys, fallback = "") {
-  for (const k of keys) {
-    if (o && o[k] !== undefined && o[k] !== null && o[k] !== "") return o[k];
+function val(object, keys, fallback = "") {
+  for (const key of keys) {
+    if (
+      object?.[key] !== undefined &&
+      object?.[key] !== null &&
+      object?.[key] !== ""
+    ) {
+      return object[key];
+    }
   }
+
   return fallback;
 }
 
-async function api(path) {
-  const r = await fetch(`${API_BASE}${path}`, {
-    headers: { "accept": "application/json", "user-agent": "ShortDramaHub-Stremio/1.0" }
-  });
-  if (!r.ok) throw new Error(`API ${r.status}`);
-  return r.json();
+function arrGenre(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
+  return [];
 }
 
-function normalizeDrama(d, provider) {
-  const id = String(pick(d, ["id", "bookId", "code", "dramaId"]));
+// ============================================================
+// API HEADERS
+// ============================================================
+
+function apiHeaders() {
   return {
-    id: `${provider}:${id}`,
-    type: "series",
-    name: String(pick(d, ["title", "name"], "Untitled")),
-    poster: pick(d, ["cover", "poster", "coverUrl", "image"]),
-    description: pick(d, ["synopsis", "description", "desc"]),
-    imdbRating: Number(pick(d, ["rating", "score"], 0)) || undefined,
-    releaseInfo: String(pick(d, ["year", "releaseYear", "status"], "")),
-    genres: Array.isArray(d.genre) ? d.genre : (typeof d.genre === "string" ? d.genre.split(",").map(s=>s.trim()) : [])
+    accept: "application/json",
+    "user-agent": "ShortDramaHub/1.1",
+
+    ...(API_KEY
+      ? {
+          "x-api-key": API_KEY,
+          authorization: `Bearer ${API_KEY}`
+        }
+      : {})
   };
 }
 
-builder.defineCatalogHandler(async ({ type, id, extra }) => {
-  if (type !== "series" || !id.startsWith("shortdrama-")) return { metas: [] };
-  const provider = id.replace("shortdrama-", "");
-  if (!providerMap[provider]) return { metas: [] };
+// ============================================================
+// API REQUEST
+// ============================================================
 
-  try {
-    let data;
-    if (extra?.search) {
-      const q = encodeURIComponent(extra.search);
-      const param = provider === "shortmax" ? `q=${q}` : `keyword=${q}`;
-      data = await api(`/${provider}/api/v1/search?${param}`);
-    } else {
-      data = await api(`/${provider}/api/v1/home`);
-    }
-    return { metas: arr(data).map(x => normalizeDrama(x, provider)).filter(x => x.id.split(":")[1] !== "undefined") };
-  } catch (e) {
-    console.error("catalog", provider, e.message);
-    return { metas: [] };
+async function api(path) {
+  const url = API_BASE + path;
+
+  console.log("API:", url);
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: apiHeaders()
+  });
+
+  const body = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `DramaBos ${response.status}: ${body.slice(0, 300)}`
+    );
   }
-});
-
-builder.defineMetaHandler(async ({ type, id }) => {
-  if (type !== "series") return { meta: null };
-  const [provider, dramaId] = String(id).split(":");
-  if (!providerMap[provider] || !dramaId) return { meta: null };
 
   try {
-    const data = await api(`/${provider}/api/v1/detail/${encodeURIComponent(dramaId)}`);
-    const d = data.drama || data.data || data;
-    const meta = normalizeDrama({ ...d, id: dramaId }, provider);
-    meta.id = id;
-    meta.name = pick(d, ["title", "name"], meta.name);
-    meta.description = pick(d, ["synopsis", "description", "desc"], meta.description);
-    meta.videos = [];
+    return JSON.parse(body);
+  } catch {
+    throw new Error(
+      "DramaBos returned invalid JSON"
+    );
+  }
+}
+
+// ============================================================
+// NORMALIZE DRAMA
+// ============================================================
+
+function normalizeDrama(drama, provider) {
+  const dramaId = String(
+    val(drama, [
+      "id",
+      "bookId",
+      "dramaId",
+      "code"
+    ])
+  );
+
+  const title = String(
+    val(drama, [
+      "title",
+      "name"
+    ], "Untitled")
+  );
+
+  const poster = val(drama, [
+    "cover",
+    "poster",
+    "coverUrl",
+    "image"
+  ]);
+
+  const background = val(drama, [
+    "background",
+    "backdrop",
+    "cover"
+  ]);
+
+  const description = val(drama, [
+    "synopsis",
+    "description",
+    "desc"
+  ]);
+
+  const genres = arrGenre(
+    val(drama, [
+      "genre",
+      "genres"
+    ], [])
+  );
+
+  const year = val(drama, [
+    "year",
+    "releaseYear"
+  ]);
+
+  const rating = Number(
+    val(drama, [
+      "rating",
+      "score"
+    ], 0)
+  );
+
+  return {
+    id: `sdh:${provider}:${encodeURIComponent(dramaId)}`,
+
+    type: "series",
+
+    name: title,
+
+    poster: poster || undefined,
+
+    background: background || undefined,
+
+    description: description || undefined,
+
+    genres,
+
+    releaseInfo: String(year || ""),
+
+    ...(rating
+      ? {
+          imdbRating: rating
+        }
+      : {})
+  };
+}
+
+// ============================================================
+// CATALOG
+// ============================================================
+
+builder.defineCatalogHandler(
+  async ({ type, id, extra }) => {
+
+    if (
+      type !== "series" ||
+      !id.startsWith("sdh-")
+    ) {
+      return {
+        metas: []
+      };
+    }
+
+    const provider = id.slice(4);
+
+    if (!providerNames[provider]) {
+      return {
+        metas: []
+      };
+    }
+
     try {
-      const epData = provider === "flickreels"
-        ? await api(`/flickreels/api/flickreels/allepisode?id=${encodeURIComponent(dramaId)}`)
-        : await api(`/${provider}/api/v1/episodes/${encodeURIComponent(dramaId)}`);
-      for (const ep of arr(epData)) {
-        const n = Number(pick(ep, ["number", "episode", "ep", "index"], 0));
-        if (!n) continue;
-        meta.videos.push({
-          id: `${id}:${n}`,
-          title: String(pick(ep, ["title", "name"], `Episode ${n}`)),
-          season: 1,
-          episode: n,
-          thumbnail: pick(ep, ["thumbnail", "cover", "image"]),
-          released: ep.released
-        });
+
+      let path;
+
+      // SEARCH
+      if (extra?.search) {
+
+        const query = encodeURIComponent(
+          extra.search
+        );
+
+        if (
+          provider === "shortmax" ||
+          provider === "flickreels"
+        ) {
+          path =
+            `/${provider}/api/v1/search?q=${query}`;
+        } else {
+          path =
+            `/${provider}/api/v1/search?keyword=${query}`;
+        }
+
       }
-    } catch (e) {
-      console.error("episodes", provider, e.message);
+
+      // HOME
+      else {
+
+        path =
+          `/${provider}/api/v1/home`;
+      }
+
+      const data = await api(path);
+
+      const dramas = listFrom(data);
+
+      const metas = dramas
+        .map((drama) =>
+          normalizeDrama(
+            drama,
+            provider
+          )
+        )
+        .filter(
+          (item) =>
+            item.id &&
+            item.name
+        );
+
+      return {
+        metas
+      };
+
+    } catch (error) {
+
+      console.error(
+        "CATALOG ERROR:",
+        provider,
+        error.message
+      );
+
+      return {
+        metas: []
+      };
     }
-    return { meta };
-  } catch (e) {
-    console.error("meta", provider, e.message);
-    return { meta: null };
   }
-});
+);
 
-builder.defineStreamHandler(async ({ type, id }) => {
-  if (type !== "series") return { streams: [] };
-  const parts = String(id).split(":");
-  if (parts.length < 3) return { streams: [] };
-  const provider = parts[0];
-  const dramaId = parts[1];
-  const ep = Number(parts[2]);
-  if (!providerMap[provider] || !dramaId || !ep) return { streams: [] };
+// ============================================================
+// META
+// ============================================================
 
-  try {
-    let data;
-    if (provider === "shortmax") {
-      // ShortMax may require an episode/code rather than the drama id.
-      data = await api(`/${provider}/api/v1/play/${encodeURIComponent(dramaId)}`);
-    } else {
-      data = await api(`/${provider}/api/v1/play/${encodeURIComponent(dramaId)}/${ep}`);
+builder.defineMetaHandler(
+  async ({ type, id }) => {
+
+    if (
+      type !== "series" ||
+      !id.startsWith("sdh:")
+    ) {
+      return {
+        meta: null
+      };
     }
-    const url = pick(data, ["streamUrl", "url", "playUrl", "videoUrl"]);
-    if (!url) return { streams: [] };
-    return {
-      streams: [{
-        name: `${providerMap[provider]} • Episode ${ep}`,
-        title: `Episode ${ep}`,
-        url,
-        behaviorHints: { bingeGroup: `${provider}-${dramaId}` }
-      }]
-    };
-  } catch (e) {
-    console.error("stream", provider, e.message);
-    return { streams: [] };
+
+    const parts = id.split(":");
+
+    const provider = parts[1];
+
+    const encodedId = parts[2];
+
+    if (
+      !providerNames[provider] ||
+      !encodedId
+    ) {
+      return {
+        meta: null
+      };
+    }
+
+    const dramaId =
+      decodeURIComponent(encodedId);
+
+    try {
+
+      // --------------------------------------------------------
+      // DETAIL
+      // --------------------------------------------------------
+
+      const detail = await api(
+        `/${provider}/api/v1/detail/${encodeURIComponent(dramaId)}`
+      );
+
+      const drama =
+        detail?.drama ||
+        detail?.data ||
+        detail;
+
+      const meta =
+        normalizeDrama(
+          {
+            ...drama,
+            id: dramaId
+          },
+          provider
+        );
+
+      // Keep original Stremio ID
+      meta.id = id;
+
+      // --------------------------------------------------------
+      // EPISODES
+      // --------------------------------------------------------
+
+      let episodes;
+
+      if (provider === "flickreels") {
+
+        episodes = await api(
+          `/flickreels/api/flickreels/allepisode?id=${encodeURIComponent(dramaId)}`
+        );
+
+      } else {
+
+        episodes = await api(
+          `/${provider}/api/v1/episodes/${encodeURIComponent(dramaId)}`
+        );
+      }
+
+      const episodeList =
+        listFrom(
+          episodes,
+          [
+            "data",
+            "results",
+            "episodes"
+          ]
+        );
+
+      meta.videos =
+        episodeList.map(
+          (episode, index) => {
+
+            const episodeNumber =
+              Number(
+                val(
+                  episode,
+                  [
+                    "number",
+                    "episode",
+                    "ep",
+                    "index"
+                  ],
+                  index + 1
+                )
+              );
+
+            const episodeCode =
+              String(
+                val(
+                  episode,
+                  [
+                    "code",
+                    "episodeCode",
+                    "epCode"
+                  ],
+                  ""
+                )
+              );
+
+            let episodeToken =
+              String(episodeNumber);
+
+            if (
+              provider === "shortmax" &&
+              episodeCode
+            ) {
+              episodeToken =
+                encodeURIComponent(
+                  episodeCode
+                );
+            }
+
+            return {
+
+              id:
+                `${id}:${episodeToken}`,
+
+              title:
+                String(
+                  val(
+                    episode,
+                    [
+                      "title",
+                      "name"
+                    ],
+                    `Episode ${episodeNumber}`
+                  )
+                ),
+
+              season: 1,
+
+              episode:
+                episodeNumber,
+
+              thumbnail:
+                val(
+                  episode,
+                  [
+                    "thumbnail",
+                    "cover",
+                    "image"
+                  ]
+                ) || undefined,
+
+              overview:
+                val(
+                  episode,
+                  [
+                    "description",
+                    "desc"
+                  ],
+                  ""
+                )
+            };
+          }
+        );
+
+      return {
+        meta
+      };
+
+    } catch (error) {
+
+      console.error(
+        "META ERROR:",
+        provider,
+        error.message
+      );
+
+      return {
+        meta: null
+      };
+    }
   }
-});
+);
 
-app.get("/", (_req, res) => res.json({
-  name: manifest.name,
-  version: manifest.version,
-  install: "/manifest.json",
-  message: "Open /manifest.json in Stremio or use the public HTTPS URL + /manifest.json"
-}));
+// ============================================================
+// STREAM
+// ============================================================
 
-app.use(getRouter(builder.getInterface()));
+builder.defineStreamHandler(
+  async ({ type, id }) => {
 
-app.listen(PORT, () => {
-  console.log(`Short Drama Hub listening on port ${PORT}`);
-});
+    if (
+      type !== "series" ||
+      !id.startsWith("sdh:")
+    ) {
+      return {
+        streams: []
+      };
+    }
+
+    const parts =
+      id.split(":");
+
+    if (parts.length < 4) {
+      return {
+        streams: []
+      };
+    }
+
+    const provider =
+      parts[1];
+
+    const dramaId =
+      decodeURIComponent(parts[2]);
+
+    const episodeToken =
+      decodeURIComponent(
+        parts.slice(3).join(":")
+      );
+
+    if (!providerNames[provider]) {
+      return {
+        streams: []
+      };
+    }
+
+    try {
+
+      let path;
+
+      // SHORTMAX
+      if (provider === "shortmax") {
+
+        path =
+          `/shortmax/api/v1/play/${encodeURIComponent(
+            episodeToken
+          )}`;
+
+      }
+
+      // OTHER PROVIDERS
+      else {
+
+        path =
+          `/${provider}/api/v1/play/${encodeURIComponent(
+            dramaId
+          )}/${encodeURIComponent(
+            episodeToken
+          )}`;
+      }
+
+      const data =
+        await api(path);
+
+      const streamUrl =
+        val(
+          data,
+          [
+            "streamUrl",
+            "url",
+            "playUrl",
+            "videoUrl"
+          ]
+        );
+
+      if (!streamUrl) {
+
+        console.error(
+          "No stream URL returned"
+        );
+
+        return {
+          streams: []
+        };
+      }
+
+      let subtitles;
+
+      if (
+        Array.isArray(
+          data?.subtitles
+        )
+      ) {
+
+        subtitles =
+          data.subtitles
+            .map(
+              (subtitle) => ({
+                url: subtitle.url,
+                lang:
+                  subtitle.lang ||
+                  "en"
+              })
+            )
+            .filter(
+              (subtitle) =>
+                subtitle.url
+            );
+      }
+
+      return {
+
+        streams: [
+
+          {
+
+            name:
+              providerNames[provider],
+
+            title:
+              `Episode ${episodeToken}`,
+
+            url:
+              streamUrl,
+
+            ...(subtitles
+              ? {
+                  subtitles
+                }
+              : {}),
+
+            behaviorHints: {
+
+              bingeGroup:
+                `${provider}-${dramaId}`
+            }
+          }
+
+        ]
+      };
+
+    } catch (error) {
+
+      console.error(
+        "STREAM ERROR:",
+        provider,
+        error.message
+      );
+
+      return {
+        streams: []
+      };
+    }
+  }
+);
+
+// ============================================================
+// HEALTH CHECK
+// ============================================================
+
+app.get(
+  "/health",
+  (_req, res) => {
+
+    res.json({
+      ok: true,
+
+      addon:
+        manifest.name,
+
+      version:
+        manifest.version,
+
+      providerCount:
+        PROVIDERS.length,
+
+      api:
+        API_BASE
+    });
+  }
+);
+
+// ============================================================
+// ROOT
+// ============================================================
+
+app.get(
+  "/",
+  (_req, res) => {
+
+    res.json({
+
+      addon:
+        manifest.name,
+
+      version:
+        manifest.version,
+
+      manifest:
+        "/manifest.json",
+
+      health:
+        "/health"
+    });
+  }
+);
+
+// ============================================================
+// STREMIO ROUTER
+// ============================================================
+
+app.use(
+  getRouter(
+    builder.getInterface()
+  )
+);
+
+// ============================================================
+// START SERVER
+// ============================================================
+
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+
+    console.log(
+      `Short Drama Hub running on port ${PORT}`
+    );
+
+    console.log(
+      `DramaBos API: ${API_BASE}`
+    );
+  }
+);
